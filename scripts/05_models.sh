@@ -10,8 +10,13 @@ if [[ "${WD_DOWNLOAD_OPTIONAL:-0}" == "1" ]]; then
   WD_GROUPS="${WD_GROUPS},optional"
 fi
 
-# hf_transfer is a large win on the two ~16 GB expert checkpoints.
-export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+# download.py picks and enables the right accelerator itself (Xet on
+# huggingface_hub 1.x, hf_transfer on 0.x) — it has to happen before the
+# library is imported, so it is not set here.
+CONCURRENCY="${WD_DOWNLOAD_CONCURRENCY:-4}"
+
+# Keep the HF cache beside the models so a partial transfer cannot fill a
+# different filesystem than the one we checked for free space.
 export HF_HOME="${HF_HOME:-${WD_MODEL_ROOT%/models}/hf-cache}"
 mkdir -p "$HF_HOME"
 
@@ -23,13 +28,16 @@ fi
 
 log "groups: ${WD_GROUPS}"
 log "destination: ${COMFY_DIR}/models"
-log "this is the slow part — expect 15-40 minutes on a cold volume"
+log "concurrent transfers: ${CONCURRENCY}"
+log "this is the slow part — roughly 45 GiB; wall time depends on the pod's"
+log "network, typically 5-15 minutes on a well-connected RunPod region"
 
 PY="$(python_bin)"
 if "$PY" "${WD_REPO_DIR}/scripts/download.py" \
       --manifest "${WD_REPO_DIR}/config/models.tsv" \
       --models-root "${COMFY_DIR}/models" \
-      --groups "${WD_GROUPS}"
+      --groups "${WD_GROUPS}" \
+      --concurrency "${CONCURRENCY}"
 then
   mark_done models
   ok "stage 5 complete — all core models present"

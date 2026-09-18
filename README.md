@@ -20,8 +20,8 @@ Wan-Dancer は Wan 2.2 ベースの music-to-dance モデルで、**global**（�
 | Compute type | NVIDIA GPU |
 | Container image | `runpod/comfyui:latest` |
 | Container start command | 下記 |
-| Container disk | 40 GB |
-| **Persistent storage (Volume disk)** | **100 GB** ← **0 GB から変更してください** |
+| **Container disk** | **80 GB**（添付の設定どおりでOK） |
+| Persistent storage (Volume disk) | **0 GB のままでOK** |
 | Persistent storage mount path | `/workspace` |
 | Expose HTTP ports | `8188` |
 
@@ -33,30 +33,37 @@ bash -c "git clone https://github.com/yamak493/wan-dancer.git /tmp/setup && bash
 
 （現在ご設定の内容のままで動きます。）
 
-### ⚠️ Volume disk 0 GB は必ず変更してください
+### 使用頻度が低い前提の設計（毎回ダウンロード）
 
-これが「いつでも生成できる状態」の要です。
+永続ボリュームは使わず、**起動ごとに Hugging Face から並列ダウンロード**します。
+使う機会が少ないなら、待機中のストレージ課金を払うよりこの方が合理的です。
 
-- RunPod の **Container disk は Pod を停止すると消去されます**。
-- Volume disk = 0 GB のままだと、モデル約 **45 GB** が container disk に落ちるため、
-  **停止 → 起動のたびに 45 GB を再ダウンロード**することになります（毎回 15〜40 分）。
-- Volume disk を 100 GB にすると `/workspace` が永続化され、モデルはそこに保存されます。
-  2 回目以降の起動は**約 1〜2 分**で生成可能になります。
+高速化は 2 段構えです。
 
-`setup.sh` は永続ボリュームの有無を自動判定します。未接続の場合も動作はしますが、
-ログに大きな警告を出します。
+1. **ファイル内の並列化** — Hugging Face のチャンク分割マルチコネクション転送。
+   どれが有効かは `huggingface_hub` のバージョンで変わります:
+   - **1.x** → **Xet**（`hf_xet`）。`HF_XET_HIGH_PERFORMANCE=1` で並列数とバッファを引き上げ
+   - **0.x** → **hf_transfer**（Rust 実装のマルチコネクション DL）
 
-容量の目安（Volume disk 100 GB 推奨）:
+   インストール済みバージョンを検出して**正しい方だけ**を有効化します。
+   ここは要注意で、`huggingface_hub` 1.x では `HF_HUB_ENABLE_HF_TRANSFER` は
+   **廃止されており、設定しても無視されます**（1.x で残っていたら警告して除去します）。
+2. **ファイル間の並列化** — スレッドプールで既定 4 本同時。約 16 GB のエキスパート 2 本が
+   直列に並ばず同時に飛びます。`WD_DOWNLOAD_CONCURRENCY` で変更可。
 
-| 用途 | サイズ |
-|---|---|
-| dancer global / local エキスパート (fp8) | 約 16 GB × 2 |
-| UMT5-XXL text encoder (fp8_scaled) | 約 6.7 GB |
-| CLIP Vision H | 約 1.2 GB |
-| Wan 2.1 VAE | 約 250 MB |
-| wav2vec2 audio encoder (fp16) | 約 630 MB |
-| LightX2V lightning LoRA | 約 1.2 GB |
-| HF キャッシュ + 出力動画 | 余裕分 |
+並列時は個別のプログレスバーがログ上で混ざって読めなくなるため抑止し、代わりに
+**集約進捗**を 15 秒ごとに 1 行出します（実際にディスクに着いたバイト数を数えるので、
+転送中の部分ファイルも反映されます）:
+
+```
+[download] progress 12.4 GiB of ~45.2 GiB (231 MiB/s avg, ~2 min left)
+```
+
+体感目安: 回線の良い RunPod リージョンで **5〜15 分**程度。終了時に実測スループットを出します。
+
+**キャッシュしたい場合**は Volume disk を 100 GB にして `/workspace` にマウントすれば、
+自動検出してそちらを使います（2 回目以降の起動は 1〜2 分）。スクリプトは
+どちらのモードでも動きます。
 
 ### GPU
 
@@ -153,6 +160,8 @@ COMFY_DIR=/ComfyUI WD_REPO_DIR=/tmp/setup bash /tmp/setup/scripts/healthcheck.sh
 |---|---|---|
 | `HF_TOKEN` | – | モデルが gated 化した場合に必要 |
 | `WD_MODEL_GROUPS` | `core,speed` | 取得するマニフェストグループ |
+| `WD_DOWNLOAD_CONCURRENCY` | `4` | 同時ダウンロードするファイル数 |
+| `WD_UPGRADE_HF_HUB` | `0` | `1` で `huggingface_hub` を最新化（下記注意） |
 | `WD_TEXT_ENCODER` | `fp8` | `fp16` で UMT5 を fp16 に |
 | `WD_VRAM_MODE` | `auto` | `highvram` / `normalvram` / `lowvram` |
 | `WD_UPDATE_COMFYUI` | `1` | 起動時に ComfyUI を git pull |
@@ -168,7 +177,15 @@ COMFY_DIR=/ComfyUI WD_REPO_DIR=/tmp/setup bash /tmp/setup/scripts/healthcheck.sh
 （既定）で更新を試みますが、イメージが git チェックアウトでない場合は更新できません。
 その場合はより新しいベースイメージを指定してください。
 
-**起動のたびにダウンロードが走る** — Volume disk が 0 GB です。上記セクション 1 を参照。
+**ダウンロードが遅い** — 起動ログ冒頭の `transfer backend:` 行を確認してください。
+`Xet NOT installed` / `hf_transfer NOT installed` と出ている場合は並列転送が効かず
+素の HTTPS に落ちています（ステージ 1 が該当パッケージの導入を試みます）。
+`WD_DOWNLOAD_CONCURRENCY` を 6〜8 に上げるのも有効ですが、回線が飽和していると
+逆効果です。集約進捗行の MiB/s を見て判断してください。
+
+**`huggingface_hub` を上げたい** — 既定では**上げません**。イメージの
+`transformers` が 1.0 未満にピン留めしていることがあり、ダウンローダの高速化と
+引き換えにそれを壊すのは損です。`WD_UPGRADE_HF_HUB=1` で明示的に有効化できます。
 
 **`no space left on device`** — Container disk / Volume disk の残量を確認。
 `WD_TEXT_ENCODER=fp8`（既定）と `WD_DOWNLOAD_OPTIONAL=0`（既定）のままにし、

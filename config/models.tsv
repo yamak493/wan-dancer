@@ -13,7 +13,8 @@
 #                "split_files/" prefix moving around upstream will not break it.
 #   dest_subdir  destination under ComfyUI/models/
 #
-# Sizes are approximate; the two dancer experts dominate (~16 GB each).
+# Sizes are approximate; the two dancer experts dominate (~16 GB each) and are
+# fetched concurrently, so they do not queue behind each other.
 
 # --- Wan-Dancer 14B experts: global choreography + local motion refinement ---
 core	Comfy-Org/Wan-Dancer	split_files/diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors	diffusion_models

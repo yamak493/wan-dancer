@@ -9,17 +9,17 @@ section "Stage 2/6 — storage layout"
 log "ComfyUI:      ${COMFY_DIR}"
 log "model store:  ${WD_MODEL_ROOT}"
 
+# This template is built for infrequent use: no volume is the expected setup,
+# and models are re-fetched in parallel on each boot instead of paying for
+# idle storage. A volume is still used when one happens to be attached, which
+# makes the boot nearly instant.
 if [[ "${WD_MODELS_PERSISTENT}" == "1" ]]; then
-  ok "model store is on a persistent volume — models survive a pod stop"
+  ok "volume detected at ${WD_PERSIST_ROOT:-/workspace} — models are cached"
+  ok "across pod stops, so this boot only fetches what is missing"
 else
-  warn "================================================================"
-  warn "NO PERSISTENT VOLUME DETECTED at ${WD_PERSIST_ROOT:-/workspace}."
-  warn "Models are going to the container disk and WILL BE ERASED when"
-  warn "the pod is stopped, forcing a full ~45 GB re-download on restart."
-  warn ""
-  warn "To fix: edit the RunPod template and set"
-  warn "  Persistent storage (Volume disk) = 100 GB, mount path /workspace"
-  warn "================================================================"
+  log "no volume attached — models go to the container disk and are re-fetched"
+  log "on each boot (by design for occasional use; attach a 100 GB volume at"
+  log "${WD_PERSIST_ROOT:-/workspace} if you would rather cache them)"
 fi
 
 mkdir -p "${WD_MODEL_ROOT}"
@@ -27,7 +27,8 @@ AVAIL="$(free_gib "${WD_MODEL_ROOT}" || echo 0)"
 log "free space at model store: ${AVAIL:-?} GiB"
 if [[ -n "${AVAIL}" && "${AVAIL}" -lt 60 ]]; then
   warn "less than 60 GiB free — the full model set needs roughly 45 GiB plus"
-  warn "room for output video; downloads may fail part-way through"
+  warn "room for output video; downloads may fail part-way through."
+  warn "Raise the RunPod Container disk (80 GB is a good figure)."
 fi
 
 # Redirect each model subdirectory onto the store via symlink. ComfyUI resolves
