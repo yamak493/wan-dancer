@@ -1,0 +1,39 @@
+# Wan-Dancer model manifest for ComfyUI (native workflow).
+#
+# Columns (TAB separated):
+#   group	hf_repo	filename	dest_subdir
+#
+#   group        core     = always downloaded
+#                speed    = LightX2V lightning LoRA (fast, fewer steps)
+#                optional = only when WD_DOWNLOAD_OPTIONAL=1
+#   hf_repo      HuggingFace repo id
+#   filename     path inside the repo. Only the basename has to be correct:
+#                scripts/download.py resolves the real in-repo path through the
+#                HuggingFace API when the given path does not exist, so a
+#                "split_files/" prefix moving around upstream will not break it.
+#   dest_subdir  destination under ComfyUI/models/
+#
+# Sizes are approximate; the two dancer experts dominate (~16 GB each).
+
+# --- Wan-Dancer 14B experts: global choreography + local motion refinement ---
+core	Comfy-Org/Wan-Dancer	split_files/diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors	diffusion_models
+core	Comfy-Org/Wan-Dancer	split_files/diffusion_models/wan2.2_dancer_14b_local_fp8_scaled.safetensors	diffusion_models
+
+# --- Text encoder (UMT5-XXL). fp8_scaled ~6.7GB, fp16 ~11GB. -----------------
+# Override with WD_TEXT_ENCODER=fp16 to pull umt5_xxl_fp16.safetensors instead.
+core	Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders
+
+# --- Vision encoder: preserves identity/clothing from the reference image ----
+core	Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/clip_vision/clip_vision_h.safetensors	clip_vision
+
+# --- Wan 2.1 VAE: latent encode/decode for video frames ----------------------
+core	Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/vae/wan_2.1_vae.safetensors	vae
+
+# --- Audio encoder: turns the music track into conditioning embeddings -------
+core	Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/audio_encoders/wav2vec2_large_english_fp16.safetensors	audio_encoders
+
+# --- LightX2V lightning LoRA: far fewer sampling steps per clip --------------
+speed	Kijai/WanVideo_comfy	lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors	loras
+
+# --- Optional: full-precision text encoder (only with WD_DOWNLOAD_OPTIONAL=1)-
+optional	Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/text_encoders/umt5_xxl_fp16.safetensors	text_encoders
