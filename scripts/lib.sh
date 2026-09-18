@@ -2,6 +2,12 @@
 # Shared helpers for the Wan-Dancer RunPod bootstrap scripts.
 # Sourced by every script; never executed directly.
 
+# Status-file helpers for the progress page. Sourced here so every stage
+# script gets them just by sourcing lib.sh.
+if [[ -n "${WD_REPO_DIR:-}" && -f "${WD_REPO_DIR}/scripts/status.sh" ]]; then
+  source "${WD_REPO_DIR}/scripts/status.sh"
+fi
+
 # ---------------------------------------------------------------- logging ----
 _ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 

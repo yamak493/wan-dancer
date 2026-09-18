@@ -12,6 +12,16 @@ section "Readiness check"
 MODELS="${COMFY_DIR}/models"
 MISSING=0
 
+# Rows are collected as JSON as well as printed, so a "models missing" outcome
+# shows up on the progress page instead of only in a log that may have
+# scrolled out of RunPod's buffer.
+ROWS_JSON=""
+add_row() {
+  local label="$1" okflag="$2" detail="$3"
+  [[ -n "$ROWS_JSON" ]] && ROWS_JSON="${ROWS_JSON},"
+  ROWS_JSON="${ROWS_JSON}{\"label\":\"${label}\",\"ok\":${okflag},\"detail\":\"${detail}\"}"
+}
+
 check_any() {
   local subdir="$1" pattern="$2" label="$3"
   local found
@@ -20,8 +30,10 @@ check_any() {
     local size
     size="$(du -h "$found" 2>/dev/null | cut -f1)"
     ok "$(printf '%-22s %s (%s)' "$label" "$(basename "$found")" "$size")"
+    add_row "$label" true "$(basename "$found") (${size})"
   else
     err "$(printf '%-22s MISSING  (models/%s/%s)' "$label" "$subdir" "$pattern")"
+    add_row "$label" false "MISSING"
     MISSING=$(( MISSING + 1 ))
   fi
 }
@@ -34,9 +46,13 @@ check_any vae              '*vae*.safetensors'           'wan 2.1 vae'
 check_any audio_encoders   'wav2vec2*.safetensors'       'audio encoder'
 
 found_lora="$(find -L "${MODELS}/loras" -maxdepth 1 -iname '*lightx2v*.safetensors' 2>/dev/null | head -1)"
-[[ -n "$found_lora" ]] \
-  && ok "$(printf '%-22s %s' 'lightning lora' "$(basename "$found_lora")")" \
-  || warn "$(printf '%-22s not present (optional; sampling will use full steps)' 'lightning lora')"
+if [[ -n "$found_lora" ]]; then
+  ok "$(printf '%-22s %s' 'lightning lora' "$(basename "$found_lora")")"
+  add_row "lightning lora" true "$(basename "$found_lora")"
+else
+  warn "$(printf '%-22s not present (optional; sampling will use full steps)' 'lightning lora')"
+  add_row "lightning lora" true "not present (optional)"
+fi
 
 # Does this ComfyUI know the Wan-Dancer nodes at all? An up-to-date node
 # registry is the other half of "ready"; an old image silently lacks them.
@@ -75,6 +91,12 @@ else
   err "${MISSING} required model file(s) missing — run: bash ${WD_REPO_DIR}/setup.sh --models-only"
 fi
 df -h "${MODELS}" 2>/dev/null | tail -2 >&2
+
+# Publish for the progress page. status_set comes from lib.sh and is a no-op
+# when the page is disabled or python3 is unavailable.
+if declare -F status_set >/dev/null 2>&1; then
+  status_set readiness "{\"rows\":[${ROWS_JSON}],\"missing\":${MISSING}}"
+fi
 
 # Exit status reflects only the model files: a missing node registry is
 # reported above but is not something this script can decide on.

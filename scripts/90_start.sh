@@ -23,8 +23,54 @@ if [[ "${WD_USE_IMAGE_ENTRYPOINT:-0}" == "1" ]]; then
   warn "WD_USE_IMAGE_ENTRYPOINT=1 but no image start script found; starting ComfyUI directly"
 fi
 
-cd "${COMFY_DIR}"
+# --------------------------------------------------- release the status page ----
+# setup.sh normally stops it before exec'ing this script, but a leftover from a
+# crashed run would hold the port and ComfyUI would die on "address already in
+# use" — which stops the pod. So reap by PID file, then wait for the port to
+# actually clear: the kernel can hold it briefly after the process is gone.
+PID_FILE="${WD_STATUS_DIR:-/tmp/wan-dancer}/server.pid"
+if [[ -f "${PID_FILE}" ]]; then
+  STALE_PID="$(cat "${PID_FILE}" 2>/dev/null || true)"
+  if [[ -n "${STALE_PID}" ]] && kill -0 "${STALE_PID}" 2>/dev/null; then
+    log "stopping the progress page (pid ${STALE_PID}) to free port ${PORT}"
+    kill "${STALE_PID}" 2>/dev/null || true
+  fi
+  rm -f "${PID_FILE}"
+fi
+
 PY="$(python_bin)"
+
+# SO_REUSEADDR matters here: browsers that loaded the progress page leave
+# sockets in TIME_WAIT, and a plain bind() refuses those for ~60s. ComfyUI sets
+# SO_REUSEADDR and binds straight through, so probing without it would report a
+# phantom conflict on every boot anyone actually watched. A live listener is
+# still refused, which is the case we want to catch.
+port_is_free() {
+  "$PY" - "$1" <<'PYEOF' 2>/dev/null
+import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("0.0.0.0", int(sys.argv[1])))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PYEOF
+}
+
+for _ in $(seq 1 30); do          # up to ~15s
+  port_is_free "$PORT" && break
+  sleep 0.5
+done
+if port_is_free "$PORT"; then
+  ok "port ${PORT} is free"
+else
+  warn "port ${PORT} still in use — ComfyUI may fail to bind."
+  warn "Something other than this template is listening on it."
+fi
+
+cd "${COMFY_DIR}"
 
 ARGS=( main.py --listen "$HOST" --port "$PORT" )
 

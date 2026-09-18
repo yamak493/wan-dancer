@@ -38,6 +38,12 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import wd_status
+except Exception:  # pragma: no cover - progress reporting is never load-bearing
+    wd_status = None  # type: ignore[assignment]
+
 RETRIES = 4
 BACKOFF_BASE = 2  # 2s, 4s, 8s, 16s
 DEFAULT_CONCURRENCY = 4
@@ -50,6 +56,21 @@ def log(msg: str) -> None:
     with _print_lock:
         sys.stderr.write(f"[download] {msg}\n")
         sys.stderr.flush()
+
+
+def status_patch(patch: dict) -> None:
+    """Merge into the setup status file, if the progress page is enabled.
+
+    Failures are swallowed on purpose: a 45 GiB download must not die because
+    a status file could not be written.
+    """
+    if wd_status is None or os.environ.get("WD_STATUS_PAGE") == "0":
+        return
+    path = Path(os.environ.get("WD_STATUS_DIR", "/tmp/wan-dancer")) / "status.json"
+    try:
+        wd_status.update(path, patch)
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------- backend ----
@@ -269,6 +290,8 @@ def fetch(task: Task) -> None:
     task.dest.mkdir(parents=True, exist_ok=True)
     size_note = f" (~{task.expected_size / 2**30:.2f} GiB)" if task.expected_size else ""
     log(f"start  {entry.basename}{size_note}")
+    status_patch({"download": {"files": {entry.basename: {
+        "state": "running", "size": task.expected_size}}}})
     started = time.monotonic()
 
     delay = BACKOFF_BASE
@@ -292,16 +315,22 @@ def fetch(task: Task) -> None:
             log(f"done   {entry.basename} "
                 f"({task.bytes_done / 2**30:.2f} GiB in {elapsed:.0f}s, {rate:.0f} MiB/s)")
             task.ok = True
+            status_patch({"download": {"files": {entry.basename: {
+                "state": "done", "size": task.bytes_done}}}})
             return
         except Exception as exc:
             permanent = _is_permanent(exc)
             if permanent is not None:
                 task.error = permanent
                 log(f"failed {entry.basename}: {permanent}")
+                status_patch({"download": {"files": {entry.basename: {
+                    "state": "failed", "size": task.expected_size}}}})
                 return
             if attempt == RETRIES:
                 task.error = str(exc)
                 log(f"failed {entry.basename} after {RETRIES} attempts: {exc}")
+                status_patch({"download": {"files": {entry.basename: {
+                    "state": "failed", "size": task.expected_size}}}})
                 return
             log(f"retry  {entry.basename}: attempt {attempt}/{RETRIES} failed ({exc}); waiting {delay}s")
             time.sleep(delay)
@@ -343,12 +372,21 @@ def monitor(root: Path, baseline: int, total_expected: int, stop: threading.Even
         done = max(_tree_bytes(root) - baseline, 0)
         elapsed = max(time.monotonic() - started, 1e-6)
         rate = done / elapsed
+        eta = (total_expected - done) / rate if rate > 0 and total_expected > done else 0
+
         msg = (f"progress {done / 2**30:.1f} GiB of ~{total_expected / 2**30:.1f} GiB "
                f"({rate / 2**20:.0f} MiB/s avg")
-        if rate > 0 and total_expected > done:
-            eta = (total_expected - done) / rate
+        if eta:
             msg += f", ~{eta / 60:.0f} min left"
         log(msg + ")")
+
+        # Same numbers, same tick — the progress page reads them from here.
+        status_patch({"download": {
+            "done_bytes": done,
+            "total_bytes": total_expected,
+            "rate_bps": rate,
+            "eta_s": eta,
+        }})
 
 
 # ------------------------------------------------------------------- main ----
@@ -394,6 +432,12 @@ def main() -> int:
         args.models_root.mkdir(parents=True, exist_ok=True)
         baseline = _tree_bytes(args.models_root)
         log(f"downloading {len(pending)} file(s), ~{total_expected / 2**30:.1f} GiB total")
+        status_patch({"download": {
+            "total_bytes": total_expected,
+            "done_bytes": 0,
+            "files": {t.entry.basename: {"state": "pending", "size": t.expected_size}
+                      for t in pending},
+        }})
 
         stop = threading.Event()
         mon = threading.Thread(target=monitor,
@@ -416,6 +460,14 @@ def main() -> int:
         moved = sum(t.bytes_done for t in pending)
         log(f"transferred {moved / 2**30:.2f} GiB in {wall / 60:.1f} min "
             f"({moved / max(wall, 1e-6) / 2**20:.0f} MiB/s aggregate)")
+        # The monitor may have been mid-sleep when the last file landed, so
+        # publish the final figures rather than leaving a stale 97%.
+        status_patch({"download": {
+            "done_bytes": max(moved, 0),
+            "total_bytes": max(total_expected, moved),
+            "rate_bps": moved / max(wall, 1e-6),
+            "eta_s": 0,
+        }})
     else:
         log("every selected file is already present")
 

@@ -65,6 +65,66 @@ bash -c "git clone https://github.com/yamak493/wan-dancer.git /tmp/setup && bash
 自動検出してそちらを使います（2 回目以降の起動は 1〜2 分）。スクリプトは
 どちらのモードでも動きます。
 
+### 進行状況の確認
+
+**ポート 8188 をブラウザで開いてください。** セットアップ中は進捗ページが、完了後は
+ComfyUI が、同じポートに出ます（RunPod の **Connect → HTTP Service (8188)**）。
+
+ComfyUI は全ステージ終了後にしか起動しないため、そのままだとダウンロード中の
+5〜15 分間ポートが死んだままになります。そこを進捗ページが埋めます。
+
+```
+Wan-Dancer setup                       port 8188 · phase setup · elapsed 3m 34s
+
+  Setting up…
+  Models are downloading. ComfyUI starts automatically when this finishes.
+
+  STAGES                              MODEL DOWNLOAD
+  ✓ System dependencies      24s        27%
+  ✓ Storage layout            1s        12.4 GiB of 45.2 GiB · 231 MiB/s · ~2m 28s left
+  ✓ ComfyUI                  18s        [███████░░░░░░░░░░░░░░░░]
+  ✓ Custom nodes             11s
+  ⟳ Model download        2m 40s        ⟳ wan2.2_dancer_14b_global_fp8…   16.2 GiB
+  · Workflows                           ⟳ wan2.2_dancer_14b_local_fp8…    16.2 GiB
+                                        ✓ wan_2.1_vae.safetensors          0.24 GiB
+  LOG (last 200 lines)
+  [download] progress 12.4 GiB of ~45.2 GiB (231 MiB/s avg, ~2 min left)
+```
+
+5 秒ごとに自動更新（meta refresh のみ、JavaScript なし）。ステージ一覧、ダウンロード
+進捗と ETA、ファイル単位の状態、最後に**ログ末尾 200 行**が出ます。準備完了の判定
+結果（どのモデルが欠けているか）もここに出るので、失敗時の原因もブラウザだけで分かります。
+
+準備ができると ComfyUI にポートを明け渡します。数秒後にリロードしてください。
+
+他の確認経路:
+
+| 経路 | 用途 |
+|---|---|
+| `http://<pod>:8188/` | 進捗ページ（上記） |
+| `http://<pod>:8188/status.json` | 生の状態。`curl` やスクリプト向け |
+| `http://<pod>:8188/log` | ログ全文（プレーンテキスト） |
+| RunPod の **Logs** タブ | 同じ内容がコンテナログにも流れます |
+| `/var/log/wan-dancer/setup.log` | ログファイル。**ComfyUI 起動後の出力も同じファイルに続きます** |
+
+RunPod の Logs ペインはバッファが有限で Pod 再起動で履歴が消えるため、ログファイルにも
+残すようにしています。
+
+進捗ページが不要なら `WD_STATUS_PAGE=0`、または `setup.sh --no-status` で無効化できます。
+ポートが既に埋まっている場合は警告を 1 行出して**起動処理はそのまま続行**します。
+
+### ⚠️ ターミナル（シェル）について
+
+RunPod の Container start command は**イメージの CMD を置き換えます**
+（[RunPod ドキュメント](https://docs.runpod.io/pods/templates/manage-templates)）。
+公式イメージで web terminal や JupyterLab を起動しているのはイメージ側の
+`/start.sh` なので、**それらは起動しません**。つまりセットアップ中にシェルへ入れない
+可能性があります。
+
+これを踏まえて、進捗ページがログ末尾を表示する設計にしてあります（「今何をしているか」
+「なぜ失敗したか」はシェル無しで分かります）。イメージ側のサービス一式に任せたい場合は
+`WD_USE_IMAGE_ENTRYPOINT=1` を設定してください（ComfyUI の起動もイメージ側に委ねられます）。
+
 ### GPU
 
 14B を 149 フレーム一括で回すため VRAM を大量に使います。**48 GB 以上（A6000 /
@@ -103,6 +163,9 @@ scripts/05_models.sh         モデル取得（stage 5）
 scripts/download.py          マニフェスト駆動ダウンローダ
 scripts/06_workflows.sh      ワークフロー JSON を配置
 scripts/healthcheck.sh       準備完了チェック（単体実行可）
+scripts/wd_status.py         状態ファイル（アトミック書き込み + 再帰マージ）
+scripts/status.sh            状態ファイルの bash ラッパ
+scripts/status_server.py     進捗ページ（標準ライブラリのみ・JS なし）
 scripts/90_start.sh          ComfyUI をフォアグラウンドで起動
 ```
 
@@ -139,6 +202,9 @@ bash /tmp/setup/setup.sh --no-start
 
 # 状態マーカーを無視して全ステージやり直し
 bash /tmp/setup/setup.sh --force
+
+# 進捗ページを立てずに実行
+bash /tmp/setup/setup.sh --no-status
 ```
 
 ### 準備状況の確認
@@ -165,7 +231,10 @@ COMFY_DIR=/ComfyUI WD_REPO_DIR=/tmp/setup bash /tmp/setup/scripts/healthcheck.sh
 | `WD_TEXT_ENCODER` | `fp8` | `fp16` で UMT5 を fp16 に |
 | `WD_VRAM_MODE` | `auto` | `highvram` / `normalvram` / `lowvram` |
 | `WD_UPDATE_COMFYUI` | `1` | 起動時に ComfyUI を git pull |
-| `WD_COMFY_PORT` | `8188` | ComfyUI のポート |
+| `WD_COMFY_PORT` | `8188` | ComfyUI と進捗ページのポート |
+| `WD_STATUS_PAGE` | `1` | `0` で進捗ページを無効化 |
+| `WD_LOG_FILE` | `/var/log/wan-dancer/setup.log` | ログファイルの出力先 |
+| `WD_STATUS_DIR` | `/tmp/wan-dancer` | 状態ファイルの置き場 |
 | `WD_USE_IMAGE_ENTRYPOINT` | `0` | `1` でイメージ標準の起動スクリプトに委譲 |
 
 ---
@@ -193,6 +262,13 @@ COMFY_DIR=/ComfyUI WD_REPO_DIR=/tmp/setup bash /tmp/setup/scripts/healthcheck.sh
 
 **サンプリング中に OOM** — `WD_VRAM_MODE=lowvram` を設定し、ワークフローの
 フレーム数・解像度を下げてください。
+
+**進捗ページが出ない** — 起動ログに `not starting progress page` があれば、そのポートを
+既に何かが掴んでいます（イメージが独自に ComfyUI を起動している等）。その場合も
+セットアップ自体は続行するので、RunPod の Logs タブで進捗を確認してください。
+
+**進捗ページのまま ComfyUI に切り替わらない** — ログの `port <N> is free` を確認して
+ください。`still in use` が出ている場合、進捗ページ以外の何かがポートを保持しています。
 
 **Pod が即停止する** — start command の最後がフォアグラウンド常駐になっている必要が
 あります。`setup.sh` をそのまま最後に呼ぶ形（上記のコマンド）を崩さないでください。
