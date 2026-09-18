@@ -1,0 +1,9 @@
+# Custom nodes installed into ComfyUI/custom_nodes (git clone, one per line).
+# Wan-Dancer itself runs on ComfyUI's *native* Wan nodes — these only add
+# quality-of-life around it (model management, video/audio I/O).
+#
+# Format: <git url>[<TAB><branch>]
+
+https://github.com/Comfy-Org/ComfyUI-Manager.git
+https://github.com/kijai/ComfyUI-KJNodes.git
+https://github.com/kosinkadink/ComfyUI-VideoHelperSuite.git
